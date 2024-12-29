@@ -2,7 +2,8 @@
   lib,
   stdenv,
   fetchFromGitHub,
-  fetchpatch,
+  makeDesktopItem,
+  copyDesktopItems,
 
   # Native build inputs
   cmake,
@@ -29,6 +30,14 @@
   libXtst,
   sqlite,
   fontconfig,
+  ladspaH,
+  dejavu_fonts,
+  xorg,
+  gtk3,
+  glib,
+
+  # Options
+  buildExtras ? true,
 }:
 
 stdenv.mkDerivation (finalAttrs: {
@@ -48,10 +57,19 @@ stdenv.mkDerivation (finalAttrs: {
     ./juce-8.0.4-cmake_install.patch
   ];
 
-  nativeBuildInputs = [
-    cmake
-    pkg-config
-    makeWrapper
+  nativeBuildInputs =
+    [
+      cmake
+      pkg-config
+      makeWrapper
+    ]
+    ++ lib.optionals buildExtras [
+      copyDesktopItems
+    ];
+
+  cmakeBuildType = "Debug";
+  cmakeFlags = lib.optionals buildExtras [
+    "-DJUCE_BUILD_EXTRAS=ON"
   ];
 
   buildInputs =
@@ -67,6 +85,9 @@ stdenv.mkDerivation (finalAttrs: {
       libepoxy
       sqlite
     ]
+    ++ lib.optionals buildExtras [
+      ladspaH
+    ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
       alsa-lib # libasound.so
       libglvnd # libGL.so
@@ -77,9 +98,81 @@ stdenv.mkDerivation (finalAttrs: {
       libXdmcp
       libxkbcommon
       libXtst
+      xorg.libX11
+      xorg.libXext
+      xorg.libXcursor
+      xorg.libXinerama
+      xorg.libXrender
+      xorg.libXrandr
+      gtk3
+      glib
     ];
 
-  propagatedBuildInputs = [ fontconfig ];
+  propagatedBuildInputs = [
+    fontconfig
+    curl
+  ];
+
+  postPatch = lib.optionalString (stdenv.isDarwin && buildExtras) ''
+    substituteInPlace extras/Build/CMake/JUCEHelperTargets.cmake --replace "-flto" ""
+  '';
+
+  desktopItems = lib.optionals buildExtras [
+    (makeDesktopItem {
+      name = "Projucer";
+      desktopName = "Projucer";
+      genericName = "JUCE project management tool";
+      comment = "IDE for working with JUCE based projects";
+      exec = "Projucer %f";
+      icon = "juce.png";
+      categories = [ "Development" ];
+      mimeTypes = [ "application/x-juce" ];
+      keywords = [
+        "Development"
+        "IDE"
+        "C++"
+      ];
+    })
+  ];
+
+  postInstall = lib.optionalString buildExtras (
+    let
+      appCheck = isApp: isApp && stdenv.isDarwin;
+      appSuffix = isApp: if appCheck isApp then ".app" else "";
+      outDir = isApp: if appCheck isApp then "$out/Applications" else "$out/bin";
+      artefactPath = name: isApp: "extras/${name}/${name}_artefacts/Debug/${name}${appSuffix isApp}";
+      mvArtefact = name: isApp: "mv ${artefactPath name isApp} ${outDir isApp}";
+    in
+    ''
+      ${lib.optionalString stdenv.isDarwin "mkdir $out/Applications"}
+
+      ${mvArtefact "Projucer" true}
+      wrapProgram ${outDir true}/Projucer${appSuffix true} \
+              --suffix JUCE_FONT_PATH ';' "${dejavu_fonts}/share/fonts/truetype/" \
+              --prefix LD_LIBRARY_PATH : "${
+                lib.makeLibraryPath [
+                  # all of these libraries are probed dynamically by JUCE (`DynamicLibrary xLib {"libX11.so.6"}`)
+                  curl
+                  fontconfig
+                  xorg.libX11
+                  xorg.libXext
+                  xorg.libXcursor
+                  xorg.libXinerama
+                  xorg.libXrender
+                  xorg.libXrandr
+                  gtk3
+                  glib
+                ]
+              }"
+      ${mvArtefact "NetworkGraphicsDemo" true}
+      ${mvArtefact "AudioPluginHost" true}
+      ${mvArtefact "AudioPerformanceTest" true}
+      ${mvArtefact "UnitTestRunner" false}
+      ${mvArtefact "BinaryBuilder" false}
+      mkdir -p $out/share/pixmaps
+      cp $src/extras/Projucer/Source/BinaryData/Icons/juce_icon.png $out/share/pixmaps/juce.png
+    ''
+  );
 
   meta = with lib; {
     description = "Cross-platform C++ application framework";
